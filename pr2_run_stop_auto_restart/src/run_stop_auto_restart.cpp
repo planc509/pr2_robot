@@ -34,36 +34,55 @@
 
 
 static bool last_e_stop_state_ = true;
-
+static bool need_reset = false;
 void powerStateCallback(const pr2_msgs::PowerBoardStateConstPtr& msg)
 {
-  if (!last_e_stop_state_ && msg->run_stop){
-    ROS_INFO("Run stop re-enabled. Bringing up power and resetting motors.");
 
-    // enable power
-    if (!ros::service::waitForService("power_board/control", ros::Duration(5.0))){
-      ROS_ERROR("Could not find power board control service");
-      return;
-    }
-    pr2_power_board::PowerBoardCommand power_board_cmd;
-    power_board_cmd.request.serial_number = msg->serial_num;
-    power_board_cmd.request.command = "start";
-    for (unsigned int i=0; i<3; i++){
-      power_board_cmd.request.breaker_number = i;
-      ros::service::call("power_board/control", power_board_cmd);
-      ROS_INFO("  - Enabling breaker %i: %i",i, power_board_cmd.response.retval);
-    }
+	if(msg->run_stop) {
+		if(!last_e_stop_state_) {
+			need_reset = true;
+		}
+		if(need_reset) {
+			bool all_circuits_on = true;
+			for(unsigned int i = 0; i < 3; i++) {
+				if(msg->circuit_state[i] < 3) {
+					all_circuits_on = false;
+					break;
+				}
+			}
+			if(!all_circuits_on) {
+				// try to turn on all missing circuits
+				// enable power
+				if (!ros::service::waitForService("power_board/control", ros::Duration(5.0))){
+				  ROS_ERROR("Could not find power board control service");
+				  return;
+				}
+				pr2_power_board::PowerBoardCommand power_board_cmd;
+				power_board_cmd.request.serial_number = msg->serial_num;
+				power_board_cmd.request.command = "start";
+				for (unsigned int i=0; i < 3; i++){
+					if(msg->circuit_state[i] < 3) {
+						power_board_cmd.request.breaker_number = i;
+				  	ros::service::call("power_board/control", power_board_cmd);
+				  	ROS_INFO("  - Enabling breaker %i: %i",i, power_board_cmd.response.retval);
+					}
+				}
+			} else {
+				// do reset
+    		// reset motors
+				ros::Duration(2.0).sleep();  // give motors time to detect power up
+				if (!ros::service::waitForService("pr2_ethercat/reset_motors", ros::Duration(5.0))){
+				  ROS_ERROR("Could not find reset motors service");
+				  return;
+				}
+				std_srvs::Empty empty_cmd;
+				ros::service::call("pr2_ethercat/reset_motors", empty_cmd);
+				ROS_INFO("  - Reset motors");
+				need_reset = false;
+			}
+		}
 
-    // reset motors
-    ros::Duration(2.0).sleep();  // give motors time to detect power up
-    if (!ros::service::waitForService("pr2_ethercat/reset_motors", ros::Duration(5.0))){
-      ROS_ERROR("Could not find reset motors service");
-      return;
-    }
-    std_srvs::Empty empty_cmd;
-    ros::service::call("pr2_ethercat/reset_motors", empty_cmd);
-    ROS_INFO("  - Reset motors");
-  }
+	}
 
   last_e_stop_state_ =  msg->run_stop;
 }
